@@ -1,68 +1,131 @@
 import pygame
 import random
 import math
+import os
 
 pygame.init()
+try:
+    pygame.mixer.init()
+    sound_enabled = True
+except:
+    print("Sound disabled.")
+    sound_enabled = False
 
-# Window
-WIDTH, HEIGHT = 900, 650
+WIDTH, HEIGHT = 1000, 700
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
-pygame.display.set_caption("Zombie Survival - Level 2")
+pygame.display.set_caption("Zombie Survival - Apocalypse")
 
 clock = pygame.time.Clock()
+
+# Load assets
+background = pygame.image.load("assets/background.jpg")
+background = pygame.transform.scale(background, (WIDTH, HEIGHT))
+
+if sound_enabled:
+    shoot_sound = pygame.mixer.Sound("assets/shoot.wav")
+    hit_sound = pygame.mixer.Sound("assets/hit.wav")
+else:
+    shoot_sound = None
+    hit_sound = None
+
 font = pygame.font.SysFont("Arial", 28)
-big_font = pygame.font.SysFont("Arial", 60)
+big_font = pygame.font.SysFont("Arial", 70)
+
+# Game states
+MENU = 0
+PLAYING = 1
+GAME_OVER = 2
+state = MENU
 
 # Player
 player_pos = [WIDTH // 2, HEIGHT // 2]
 player_speed = 5
 player_health = 100
+dash_cooldown = 0
 
 # Score
 score = 0
 
+# Weapons
+weapon_mode = 1  # 1 = pistol, 2 = shotgun
+
 # Bullets
 bullets = []
-bullet_speed = 12
+bullet_speed = 14
+shoot_delay = 300
 last_shot = 0
-shoot_delay = 300  # milliseconds
 
 # Zombies
 zombies = []
-zombie_base_speed = 1.5
+zombie_speed = 1.5
 
-# Health packs
-health_packs = []
+# Boss
+boss_active = False
 
-game_over = False
+# Explosions
+explosions = []
 
 
 def spawn_zombie():
     side = random.choice(["top", "bottom", "left", "right"])
 
     if side == "top":
-        x = random.randint(0, WIDTH)
-        y = 0
+        x, y = random.randint(0, WIDTH), 0
     elif side == "bottom":
-        x = random.randint(0, WIDTH)
-        y = HEIGHT
+        x, y = random.randint(0, WIDTH), HEIGHT
     elif side == "left":
-        x = 0
-        y = random.randint(0, HEIGHT)
+        x, y = 0, random.randint(0, HEIGHT)
     else:
-        x = WIDTH
-        y = random.randint(0, HEIGHT)
+        x, y = WIDTH, random.randint(0, HEIGHT)
 
     zombies.append({
         "pos": [x, y],
-        "speed": zombie_base_speed + score * 0.01
+        "speed": zombie_speed + score * 0.005,
+        "health": 1,
+        "boss": False
     })
 
 
-def spawn_health_pack():
-    x = random.randint(50, WIDTH - 50)
-    y = random.randint(50, HEIGHT - 50)
-    health_packs.append([x, y])
+def spawn_boss():
+    global boss_active
+    zombies.append({
+        "pos": [random.randint(100, WIDTH - 100),
+                random.randint(100, HEIGHT - 100)],
+        "speed": 1,
+        "health": 15,
+        "boss": True
+    })
+    boss_active = True
+
+
+def shoot(target_x, target_y):
+    global last_shot
+    current_time = pygame.time.get_ticks()
+
+    if current_time - last_shot < shoot_delay:
+        return
+
+    shoot_sound.play()
+    dx = target_x - player_pos[0]
+    dy = target_y - player_pos[1]
+    distance = math.hypot(dx, dy)
+
+    if distance == 0:
+        return
+
+    dx /= distance
+    dy /= distance
+
+    if weapon_mode == 1:
+        bullets.append([player_pos[0], player_pos[1], dx, dy])
+    else:
+        # Shotgun spread
+        for angle in [-0.2, 0, 0.2]:
+            new_dx = dx * math.cos(angle) - dy * math.sin(angle)
+            new_dy = dx * math.sin(angle) + dy * math.cos(angle)
+            bullets.append([player_pos[0], player_pos[1], new_dx, new_dy])
+
+    last_shot = current_time
 
 
 def move_zombies():
@@ -80,9 +143,8 @@ def move_zombies():
         zombie["pos"][0] += dx * zombie["speed"]
         zombie["pos"][1] += dy * zombie["speed"]
 
-        if math.hypot(player_pos[0] - zombie["pos"][0],
-                      player_pos[1] - zombie["pos"][1]) < 20:
-            player_health -= 0.5
+        if distance < 20:
+            player_health -= 0.4
 
 
 def move_bullets():
@@ -95,103 +157,125 @@ def move_bullets():
 
 
 def check_collisions():
-    global score
+    global score, boss_active
 
     for bullet in bullets[:]:
         for zombie in zombies[:]:
             if math.hypot(bullet[0] - zombie["pos"][0],
                           bullet[1] - zombie["pos"][1]) < 20:
+                zombie["health"] -= 1
                 if bullet in bullets:
                     bullets.remove(bullet)
-                if zombie in zombies:
+                hit_sound.play()
+
+                if zombie["health"] <= 0:
+                    if zombie["boss"]:
+                        score += 100
+                        boss_active = False
+                    else:
+                        score += 10
+                    explosions.append(zombie["pos"][:])
                     zombies.remove(zombie)
-                    score += 10
 
 
-def check_health_pickup():
-    global player_health
-    for pack in health_packs[:]:
-        if math.hypot(player_pos[0] - pack[0],
-                      player_pos[1] - pack[1]) < 25:
-            player_health = min(100, player_health + 25)
-            health_packs.remove(pack)
+def draw_explosions():
+    for exp in explosions[:]:
+        pygame.draw.circle(screen, (255, 100, 0), exp, 30)
+        explosions.remove(exp)
 
 
 def draw():
-    screen.fill((15, 15, 20))
+    screen.blit(background, (0, 0))
 
     # Player
     pygame.draw.circle(screen, (0, 200, 255), player_pos, 15)
 
     # Zombies
     for zombie in zombies:
-        pygame.draw.circle(screen, (0, 180, 0),
-                           (int(zombie["pos"][0]), int(zombie["pos"][1])), 15)
+        color = (150, 0, 150) if zombie["boss"] else (0, 200, 0)
+        pygame.draw.circle(screen, color,
+                           (int(zombie["pos"][0]), int(zombie["pos"][1])), 18 if zombie["boss"] else 15)
 
     # Bullets
     for bullet in bullets:
         pygame.draw.circle(screen, (255, 255, 0),
                            (int(bullet[0]), int(bullet[1])), 5)
 
-    # Health packs
-    for pack in health_packs:
-        pygame.draw.rect(screen, (255, 0, 0),
-                         (pack[0] - 10, pack[1] - 10, 20, 20))
+    draw_explosions()
 
     # UI
     health_text = font.render(f"Health: {int(player_health)}", True, (255, 255, 255))
     score_text = font.render(f"Score: {score}", True, (255, 255, 255))
+    weapon_text = font.render(f"Weapon: {'Shotgun' if weapon_mode == 2 else 'Pistol'}", True, (255, 255, 255))
 
     screen.blit(health_text, (20, 20))
     screen.blit(score_text, (20, 60))
-
-    if game_over:
-        over_text = big_font.render("GAME OVER", True, (255, 50, 50))
-        restart_text = font.render("Press R to Restart", True, (255, 255, 255))
-
-        screen.blit(over_text, (WIDTH // 2 - 180, HEIGHT // 2 - 50))
-        screen.blit(restart_text, (WIDTH // 2 - 110, HEIGHT // 2 + 20))
+    screen.blit(weapon_text, (20, 100))
 
     pygame.display.update()
 
 
-spawn_timer = 0
-health_timer = 0
+def reset_game():
+    global player_health, score, zombies, bullets, boss_active, state
+    player_health = 100
+    score = 0
+    zombies.clear()
+    bullets.clear()
+    boss_active = False
+    state = PLAYING
+
+
 running = True
+spawn_timer = 0
 
 while running:
     dt = clock.tick(60)
     spawn_timer += dt
-    health_timer += dt
 
-    if not game_over:
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            running = False
 
-        if spawn_timer > 1000:
+        if state == MENU:
+            if event.type == pygame.KEYDOWN:
+                state = PLAYING
+
+        elif state == PLAYING:
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                mx, my = pygame.mouse.get_pos()
+                shoot(mx, my)
+
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_1:
+                    weapon_mode = 1
+                if event.key == pygame.K_2:
+                    weapon_mode = 2
+                if event.key == pygame.K_SPACE and dash_cooldown <= 0:
+                    player_pos[0] += 100
+                    dash_cooldown = 2000
+
+        elif state == GAME_OVER:
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_r:
+                    reset_game()
+
+    if state == MENU:
+        screen.fill((0, 0, 0))
+        title = big_font.render("ZOMBIE APOCALYPSE", True, (200, 0, 0))
+        start = font.render("Press any key to start", True, (255, 255, 255))
+        screen.blit(title, (WIDTH // 2 - 250, HEIGHT // 2 - 60))
+        screen.blit(start, (WIDTH // 2 - 130, HEIGHT // 2 + 20))
+        pygame.display.update()
+        continue
+
+    if state == PLAYING:
+
+        if spawn_timer > 1200:
             spawn_zombie()
             spawn_timer = 0
 
-        if health_timer > 10000:
-            spawn_health_pack()
-            health_timer = 0
-
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                running = False
-
-            if event.type == pygame.MOUSEBUTTONDOWN:
-                current_time = pygame.time.get_ticks()
-                if current_time - last_shot > shoot_delay:
-                    mouse_x, mouse_y = pygame.mouse.get_pos()
-                    dx = mouse_x - player_pos[0]
-                    dy = mouse_y - player_pos[1]
-                    distance = math.hypot(dx, dy)
-
-                    if distance != 0:
-                        dx /= distance
-                        dy /= distance
-
-                    bullets.append([player_pos[0], player_pos[1], dx, dy])
-                    last_shot = current_time
+        if score > 200 and not boss_active:
+            spawn_boss()
 
         keys = pygame.key.get_pressed()
         if keys[pygame.K_w]:
@@ -203,26 +287,24 @@ while running:
         if keys[pygame.K_d]:
             player_pos[0] += player_speed
 
+        if dash_cooldown > 0:
+            dash_cooldown -= dt
+
         move_zombies()
         move_bullets()
         check_collisions()
-        check_health_pickup()
 
         if player_health <= 0:
-            game_over = True
+            state = GAME_OVER
 
-    else:
-        keys = pygame.key.get_pressed()
-        if keys[pygame.K_r]:
-            # Reset game
-            player_health = 100
-            score = 0
-            zombies.clear()
-            bullets.clear()
-            health_packs.clear()
-            player_pos = [WIDTH // 2, HEIGHT // 2]
-            game_over = False
+        draw()
 
-    draw()
+    elif state == GAME_OVER:
+        screen.fill((20, 0, 0))
+        over = big_font.render("GAME OVER", True, (255, 255, 255))
+        restart = font.render("Press R to Restart", True, (255, 255, 255))
+        screen.blit(over, (WIDTH // 2 - 180, HEIGHT // 2 - 50))
+        screen.blit(restart, (WIDTH // 2 - 120, HEIGHT // 2 + 20))
+        pygame.display.update()
 
 pygame.quit()
